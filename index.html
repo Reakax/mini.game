@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>20s Jump Runner — Mini Game</title>
+  <style>
+    /* Simple reset */
+    html,body { height:100%; margin:0; background:#87ceeb; font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial; }
+    #game-wrap { display:flex; align-items:center; justify-content:center; height:100%; }
+    canvas { background: linear-gradient(#87ceeb, #bde7ff 60%, #fff 100%); border:6px solid #2b6cb0; border-radius:8px; box-shadow: 0 6px 18px rgba(0,0,0,0.25); }
+    .hud { position: absolute; top:18px; left:50%; transform:translateX(-50%); color:#023047; text-shadow: 0 1px 0 rgba(255,255,255,0.6); font-weight:600; }
+    .overlay {
+      position: fixed; inset:0; display:flex; align-items:center; justify-content:center;
+      background:rgba(0,0,0,0.6); color:white; font-size:20px; z-index:20; flex-direction:column;
+    }
+    .big-link {
+      display:inline-block; margin-top:16px; padding:12px 18px; background:#1f6feb; color:white; border-radius:8px; text-decoration:none;
+      box-shadow: 0 6px 18px rgba(31,111,235,0.35);
+    }
+    .small { font-size:13px; opacity:0.9; margin-top:6px; }
+    #instructions { position: fixed; right:14px; top:14px; background:rgba(255,255,255,0.92); color:#023047; padding:8px 12px; border-radius:8px; font-size:13px; box-shadow:0 6px 18px rgba(0,0,0,0.08); }
+    @media (max-width:600px) { canvas { width:320px; height:160px; } }
+  </style>
+</head>
+<body data-end-link="https://example.com">
+  <div id="game-wrap">
+    <div style="position:relative;">
+      <div class="hud" id="hud">Jump to avoid obstacles — Reach the flag!</div>
+      <canvas id="game" width="900" height="220" aria-label="Jump runner game"></canvas>
+    </div>
+  </div>
+
+  <div id="instructions">
+    Controls: Space / ↑ or Tap. Reach the goal in ~20s. <div class="small">Refresh to restart.</div>
+  </div>
+
+  <script>
+  (function(){
+    // Config: adjust link by editing the <body data-end-link="..."> attribute
+    const endLink = document.body.getAttribute('data-end-link') || 'https://example.com';
+
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    // World + timing
+    const goalDistance = 2000; // world pixels to goal
+    const targetDurationMs = 20000; // ~20 seconds to reach goal
+    const speed = goalDistance / targetDurationMs; // px per ms
+
+    const groundY = 170;
+    const gravity = 0.0018; // px / ms^2
+    const jumpVelocity = -0.55; // px / ms (initial)
+    const playerX = 120; // fixed on screen
+
+    // Player state
+    const player = {
+      x: playerX,
+      y: groundY - 40, // top-left y
+      width: 32,
+      height: 40,
+      vy: 0,
+      onGround: true,
+      color: '#ffb703'
+    };
+
+    // Obstacles (positions are world X coordinates)
+    let obstacles = [];
+    const minGap = 120; // minimum spacing in px
+    const maxGap = 320;
+    const obstacleCount = 10; // number of obstacles before goal
+
+    // Pre-generate obstacles between start and goal
+    function generateObstacles() {
+      obstacles = [];
+      let pos = 500; // first obstacle world x
+      for (let i=0;i<obstacleCount;i++){
+        const w = 18 + Math.round(Math.random()*30);
+        const h = 24 + Math.round(Math.random()*70);
+        obstacles.push({
+          x: pos,
+          width: w,
+          height: h,
+          color: '#2a9d8f'
+        });
+        pos += minGap + Math.random()*(maxGap-minGap);
+        if (pos > goalDistance - 120) break;
+      }
+    }
+
+    // Game state
+    let worldOffset = 0; // how far the world has scrolled (px)
+    let lastTime = null;
+    let running = true;
+    let finished = false;
+    let crashed = false;
+
+    // Progress display element
+    const hud = document.getElementById('hud');
+
+    // Input: space/up and pointer
+    function onKey(e){
+      if (e.code === 'Space' || e.code === 'ArrowUp'){
+        e.preventDefault();
+        jump();
+      }
+      if ((e.code === 'Enter' || e.code === 'KeyR') && (finished || crashed)) {
+        restart();
+      }
+    }
+    function onPointer(){
+      jump();
+    }
+
+    function jump(){
+      if (!running) return;
+      if (player.onGround){
+        player.vy = jumpVelocity;
+        player.onGround = false;
+      }
+    }
+
+    // Collision detection AABB using screen coordinates
+    function checkCollision(ob) {
+      const obsScreenX = ob.x - worldOffset;
+      const obsY = groundY - ob.height;
+      const px = player.x;
+      const py = player.y;
+      return !(px + player.width < obsScreenX || px > obsScreenX + ob.width || py + player.height < obsY || py > obsY + ob.height);
+    }
+
+    // End overlay
+    function showEndOverlay(success) {
+      running = false;
+      finished = success;
+      // Fade canvas to black
+      const overlay = document.createElement('div');
+      overlay.className = 'overlay';
+      overlay.style.background = 'rgba(0,0,0,0)';
+      document.body.appendChild(overlay);
+
+      const title = document.createElement('div');
+      title.style.fontSize = '22px';
+      title.style.fontWeight = '700';
+      title.style.textAlign = 'center';
+      title.style.maxWidth = '92%';
+      title.style.margin = '0 12px';
+      overlay.appendChild(title);
+
+      if (success) {
+        title.innerText = 'You reached the end!';
+        const link = document.createElement('a');
+        link.className = 'big-link';
+        link.href = endLink;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.innerText = 'Open link';
+        overlay.appendChild(link);
+
+        const hint = document.createElement('div');
+        hint.className = 'small';
+        hint.innerText = 'Click the link to continue. Press R to play again.';
+        overlay.appendChild(hint);
+      } else {
+        title.innerText = 'You crashed!';
+        const hint = document.createElement('div');
+        hint.className = 'small';
+        hint.innerText = 'Press R or Enter to try again.';
+        overlay.appendChild(hint);
+      }
+
+      // subtle fade-in
+      let t = 0;
+      function fadeFrame(){
+        t += 0.03;
+        overlay.style.background = `rgba(0,0,0,${Math.min(0.9, t)})`;
+        if (t < 0.9) requestAnimationFrame(fadeFrame);
+      }
+      requestAnimationFrame(fadeFrame);
+    }
+
+    function restart(){
+      // Reset everything
+      worldOffset = 0;
+      lastTime = null;
+      running = true;
+      finished = false;
+      crashed = false;
+      player.y = groundY - player.height;
+      player.vy = 0;
+      player.onGround = true;
+      generateObstacles();
+      // remove overlays
+      document.querySelectorAll('.overlay').forEach(n=>n.remove());
+      hud.innerText = 'Jump to avoid obstacles — Reach the flag!';
+      requestAnimationFrame(loop);
+    }
+
+    // Game drawing
+    function draw() {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+
+      // ground
+      ctx.fillStyle = '#6aa84f';
+      ctx.fillRect(0, groundY, canvas.width, canvas.height-groundY);
+
+      // midground simple parallax pipes / bumps
+      ctx.fillStyle = '#4d7b1f';
+      for (let i=0;i<6;i++){
+        const gx = ((i*220) - (worldOffset*0.5 % 220) + 1000) % 220 - 60 + i*220 - 100;
+        ctx.fillRect(gx, groundY-10, 120, 10);
+      }
+
+      // Draw goal flag at world x = goalDistance
+      const goalScreenX = goalDistance - worldOffset;
+      if (goalScreenX > -80 && goalScreenX < canvas.width + 80) {
+        // pole
+        ctx.fillStyle = '#333';
+        ctx.fillRect(goalScreenX + 10, groundY - 100, 4, 100);
+        // flag
+        ctx.fillStyle = '#ef476f';
+        ctx.beginPath();
+        ctx.moveTo(goalScreenX + 14, groundY - 100);
+        ctx.lineTo(goalScreenX + 48, groundY - 86);
+        ctx.lineTo(goalScreenX + 14, groundY - 74);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Obstacles
+      for (const ob of obstacles){
+        const x = Math.round(ob.x - worldOffset);
+        if (x + ob.width < -40 || x > canvas.width + 40) continue;
+        const y = groundY - ob.height;
+        ctx.fillStyle = ob.color;
+        // simple rounded block
+        roundRect(ctx, x, y, ob.width, ob.height, 6, true, false);
+        // shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.12)';
+        ctx.fillRect(x+2, groundY-4, ob.width-4, 4);
+      }
+
+      // Player (simple rectangle with face)
+      ctx.fillStyle = player.color;
+      roundRect(ctx, player.x, player.y, player.width, player.height, 6, true, false);
+      // eye
+      ctx.fillStyle = '#2d2d2d';
+      ctx.fillRect(player.x + 20, player.y + 12, 4, 4);
+
+      // Progress bar
+      const barW = 420;
+      const barH = 8;
+      const bx = (canvas.width - barW) / 2;
+      const by = 12;
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.fillRect(bx, by, barW, barH);
+      const progress = Math.min(1, worldOffset / goalDistance);
+      ctx.fillStyle = '#264653';
+      ctx.fillRect(bx, by, barW * progress, barH);
+
+      // Timer text
+      const remainingMs = Math.max(0, targetDurationMs * (1 - worldOffset/goalDistance));
+      const remS = Math.ceil(remainingMs / 1000);
+      ctx.fillStyle = '#023047';
+      ctx.font = 'bold 14px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(`Time left: ${remS}s`, canvas.width/2, by + barH + 22);
+    }
+
+    // Utility: rounded rect
+    function roundRect(ctx,x,y,w,h,r,fill,stroke){
+      if (typeof r === 'undefined') r = 5;
+      ctx.beginPath();
+      ctx.moveTo(x+r, y);
+      ctx.arcTo(x+w, y, x+w, y+h, r);
+      ctx.arcTo(x+w, y+h, x, y+h, r);
+      ctx.arcTo(x, y+h, x, y, r);
+      ctx.arcTo(x, y, x+w, y, r);
+      ctx.closePath();
+      if (fill) ctx.fill();
+      if (stroke) ctx.stroke();
+    }
+
+    // Main loop
+    function loop(t) {
+      if (!lastTime) lastTime = t;
+      const dt = t - lastTime;
+      lastTime = t;
+      if (!running) return;
+
+      // Advance world
+      worldOffset += speed * dt;
+
+      // Update player physics
+      if (!player.onGround) {
+        player.vy += gravity * dt; // vy increases
+        player.y += player.vy * dt;
+        if (player.y >= groundY - player.height) {
+          player.y = groundY - player.height;
+          player.vy = 0;
+          player.onGround = true;
+        }
+      }
+
+      // Check collisions
+      for (const ob of obstacles){
+        if (checkCollision(ob)) {
+          crashed = true;
+          hud.innerText = 'Crashed! Press R or Enter to restart.';
+          showEndOverlay(false);
+          return;
+        }
+      }
+
+      // Draw
+      draw();
+
+      // Check goal
+      if (worldOffset >= goalDistance) {
+        hud.innerText = 'You reached the goal!';
+        showEndOverlay(true);
+        return;
+      }
+
+      // Update HUD occasionally
+      if (Math.random() < 0.02) {
+        // show a tiny hint occasionally
+        hud.innerText = 'Jump to avoid obstacles — Reach the flag!';
+      }
+
+      requestAnimationFrame(loop);
+    }
+
+    // Start
+    generateObstacles();
+    hud.innerText = 'Jump to avoid obstacles — Reach the flag!';
+    requestAnimationFrame(loop);
+
+    // Events
+    window.addEventListener('keydown', onKey);
+    canvas.addEventListener('pointerdown', onPointer);
+    canvas.addEventListener('touchstart', function(e){ e.preventDefault(); onPointer(); }, {passive:false});
+
+    // expose restart for convenience (press R)
+    window.restartRunner = restart;
+  })();
+  </script>
+</body>
+</html>
